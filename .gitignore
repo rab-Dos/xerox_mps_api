@@ -1,0 +1,18 @@
+# Distribución/Empaquetado
+envs/
+.envs
+venv/
+.venv
+backend/config/
+backend/logs/
+.pytest_cache/
+**/__pycache__/
+backend/modules/encriptarValores.py
+requirements.txt
+backend/uploads/facturas
+backend/repository/
+backend/docs/vector_db
+backend/middlewares/__pycache__/
+backend/models/__pycache__/
+backend/modules/__pycache__/
+echo "dump.rdb" >> .gitignore
