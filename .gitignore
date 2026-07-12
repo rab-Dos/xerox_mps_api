@@ -5,6 +5,7 @@ venv/
 .venv
 backend/config/
 backend/logs/
+config
 .pytest_cache/
 **/__pycache__/
 backend/modules/encriptarValores.py
