@@ -1,5 +1,5 @@
 """
-/shipments  – Envíos de suministros vía SOAP MPS API.
+/shipments - Envios de suministros via SOAP MPS API.
 
 ShipmentFeed campos:
   CarrierID, CarrierName, ChargebackCodeID, ControlID, ModifiedDate,
@@ -10,32 +10,32 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
-from soap_client import get_soap_client, base_request, date_range_filter, value_filter
-from zeep.helpers import serialize_object
+from soap_client import (
+    base_request, date_range_filter, value_filter,
+    apply_filters, call_soap
+)
 
 router = APIRouter()
 
 
-def _call(operation: str, request: dict):
+def _call(operation: str, req: dict):
     try:
-        client = get_soap_client()
-        method = getattr(client.service, operation)
-        result = method(request=request)
-        return serialize_object(result)
+        return call_soap(operation, req)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
 
-# ── GET /shipments  ───────────────────────────────────────────────────────────
+# GET /shipments
+# ------------------------------------------------------------------------------
 
-@router.get("/", summary="Listar todos los envíos")
+@router.get("/", summary="Listar todos los envios")
 def list_shipments(
     page: int = Query(1, ge=1),
     page_size: int = Query(500, ge=1, le=1000),
     sort_direction: str = Query("Descending"),
 ):
     """
-    Devuelve todos los envíos registrados en la cuenta, paginados.
+    Devuelve todos los envios registrados en la cuenta, paginados.
     """
     req = base_request(page=page, page_size=page_size)
     req["SortField"]     = "ShippedDate"
@@ -43,75 +43,34 @@ def list_shipments(
     return _call("ShipmentGetList", req)
 
 
-# ── GET /shipments/today  ─────────────────────────────────────────────────────
+# GET /shipments/range
+# ------------------------------------------------------------------------------
 
-@router.get("/today", summary="Envíos despachados hoy")
-def shipments_today(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(500, ge=1, le=1000),
-):
-    """
-    Envíos cuya ShippedDate corresponda al día de hoy.
-    """
-    today = date.today()
-    start = datetime.combine(today, datetime.min.time())
-    end   = datetime.combine(today, datetime.max.time().replace(microsecond=0))
-
-    req = base_request(page=page, page_size=page_size)
-    req["Filters"]       = [date_range_filter("ShippedDate", start, end)]
-    req["SortField"]     = "ShippedDate"
-    req["SortDirection"] = "Descending"
-    return _call("ShipmentGetList", req)
-
-
-# ── GET /shipments/range  ─────────────────────────────────────────────────────
-
-@router.get("/range", summary="Envíos despachados en intervalo de fechas")
+@router.get("/range", summary="Envios despachados en rango de fechas")
 def shipments_by_range(
-    start_date: date = Query(..., description="Fecha inicio (YYYY-MM-DD)"),
-    end_date:   date = Query(..., description="Fecha fin   (YYYY-MM-DD)"),
+    start_date: date = Query(...),
+    end_date:   date = Query(...),
     page: int = Query(1, ge=1),
     page_size: int = Query(500, ge=1, le=1000),
 ):
     """
-    Envíos con ShippedDate en el intervalo indicado.
+    Filtra los envios cuya ShippedDate se encuentre en el rango provisto.
     """
     start = datetime.combine(start_date, datetime.min.time())
     end   = datetime.combine(end_date,   datetime.max.time().replace(microsecond=0))
 
     req = base_request(page=page, page_size=page_size)
-    req["Filters"]       = [date_range_filter("ShippedDate", start, end)]
+    filters = [date_range_filter("ShippedDate", start, end)]
+    apply_filters(req, filters)
     req["SortField"]     = "ShippedDate"
     req["SortDirection"] = "Descending"
     return _call("ShipmentGetList", req)
 
 
-# ── GET /shipments/received/range  ────────────────────────────────────────────
+# GET /shipments/modified-range
+# ------------------------------------------------------------------------------
 
-@router.get("/received/range", summary="Envíos recibidos en intervalo de fechas")
-def shipments_received_range(
-    start_date: date = Query(..., description="Fecha inicio"),
-    end_date:   date = Query(..., description="Fecha fin"),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(500, ge=1, le=1000),
-):
-    """
-    Envíos cuya ReceivedDate cae en el rango indicado.
-    Útil para confirmar entrega de suministros.
-    """
-    start = datetime.combine(start_date, datetime.min.time())
-    end   = datetime.combine(end_date,   datetime.max.time().replace(microsecond=0))
-
-    req = base_request(page=page, page_size=page_size)
-    req["Filters"]       = [date_range_filter("ReceivedDate", start, end)]
-    req["SortField"]     = "ReceivedDate"
-    req["SortDirection"] = "Descending"
-    return _call("ShipmentGetList", req)
-
-
-# ── GET /shipments/modified/range  ────────────────────────────────────────────
-
-@router.get("/modified/range", summary="Envíos modificados en intervalo")
+@router.get("/modified-range", summary="Envios modificados en intervalo")
 def shipments_modified_range(
     start_date: date = Query(...),
     end_date:   date = Query(...),
@@ -119,35 +78,41 @@ def shipments_modified_range(
     page_size: int = Query(500, ge=1, le=1000),
 ):
     """
-    Envíos actualizados (ModifiedDate) en el intervalo. Sirve para sincronización.
+    Envios actualizados (ModifiedDate) en el intervalo. Sirve para sincronizacion.
     """
     start = datetime.combine(start_date, datetime.min.time())
     end   = datetime.combine(end_date,   datetime.max.time().replace(microsecond=0))
 
     req = base_request(page=page, page_size=page_size)
-    req["Filters"]       = [date_range_filter("ModifiedDate", start, end)]
+    filters = [date_range_filter("ModifiedDate", start, end)]
+    apply_filters(req, filters)
     req["SortField"]     = "ModifiedDate"
     req["SortDirection"] = "Descending"
     return _call("ShipmentGetList", req)
 
 
-# ── GET /shipments/{shipment_id}  ─────────────────────────────────────────────
+# GET /shipments/{shipment_id}
+# ------------------------------------------------------------------------------
 
-@router.get("/{shipment_id}", summary="Detalle de un envío")
+@router.get("/{shipment_id}", summary="Detalle de un envio")
 def get_shipment(shipment_id: str):
-    """Devuelve el detalle completo de un envío por su ShipmentID (GUID)."""
+    """Devuelve el detalle completo de un envio por su ShipmentID (GUID)."""
     req = base_request()
-    req["ObjectIDs"] = [shipment_id]
+    req["ObjectIDs"] = {"string": [shipment_id]}
     return _call("ShipmentGet", req)
 
 
-# ── GET /shipments/carriers  ──────────────────────────────────────────────────
+# GET /shipments/carriers
+# ------------------------------------------------------------------------------
 
 @router.get("/carriers/list", summary="Transportistas disponibles")
 def list_carriers(
     page: int = Query(1, ge=1),
     page_size: int = Query(500, ge=1, le=1000),
 ):
-    """Devuelve el catálogo de transportistas (carriers) disponibles."""
+    """
+    Lista las empresas fleteras y couriers homologados (DHL, FedEx, UPS, etc.)
+    registrados para el despacho de suministros.
+    """
     req = base_request(page=page, page_size=page_size)
-    return _call("ShippingCarrierGetList", req)
+    return _call("CarrierGetList", req)

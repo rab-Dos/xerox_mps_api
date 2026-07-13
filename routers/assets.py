@@ -1,5 +1,5 @@
 """
-/assets  – Consulta de activos (impresoras/MFDs) vía SOAP MPS API.
+/assets - Consulta de activos (impresoras/MFDs) via SOAP MPS API.
 
 Campos disponibles en AssetFeed:
   AccountID, AccountName, AssetID, AssetNumber, AssetTag3rdParty,
@@ -12,142 +12,108 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Query
-from soap_client import get_soap_client, base_request, date_range_filter, value_filter
-from zeep.helpers import serialize_object
+from soap_client import (
+    base_request, date_range_filter, value_filter,
+    apply_filters, call_soap
+)
 
 router = APIRouter()
 
 
-def _call(operation: str, request: dict):
+def _call(operation: str, req: dict):
     try:
-        client = get_soap_client()
-        method = getattr(client.service, operation)
-        result = method(request=request)
-        return serialize_object(result)
+        return call_soap(operation, req)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
 
-# ── GET /assets  ──────────────────────────────────────────────────────────────
+# GET /assets
+# ------------------------------------------------------------------------------
 
 @router.get("/", summary="Listar todos los activos")
 def list_assets(
-    page: int = Query(1,   ge=1,   description="Número de página"),
-    page_size: int = Query(500, ge=1, le=1000, description="Registros por página"),
-    sort_field: Optional[str] = Query(None, description="Campo de ordenamiento (ej. SerialNumber)"),
-    sort_direction: Optional[str] = Query("Ascending", description="Ascending | Descending"),
+    page: int = Query(1,   ge=1,   description="Numero de pagina"),
+    page_size: int = Query(500, ge=1, le=1000, description="Registros por pagina"),
+    sort_field: Optional[str] = Query("AssetNumber", description="Campo de ordenamiento"),
+    sort_direction: str = Query("Ascending", description="Ascending | Descending"),
 ):
     """
-    Devuelve la lista paginada de todos los activos (impresoras/MFDs) registrados
-    en la cuenta Xerox MPS.
+    Devuelve la lista completa de dispositivos bajo contrato, paginados.
     """
     req = base_request(page=page, page_size=page_size)
-    if sort_field:
-        req["SortField"] = sort_field
-        req["SortDirection"] = sort_direction
+    req["SortField"]     = sort_field
+    req["SortDirection"] = sort_direction
     return _call("AssetGetList", req)
 
 
-# ── GET /assets/today  ────────────────────────────────────────────────────────
+# GET /assets/range
+# ------------------------------------------------------------------------------
 
-@router.get("/today", summary="Activos modificados hoy")
-def assets_modified_today(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(500, ge=1, le=1000),
-):
-    """
-    Filtra activos cuya fecha de modificación (ModifiedDate) corresponda al día de hoy.
-    """
-    today = date.today()
-    start = datetime.combine(today, datetime.min.time())
-    end   = datetime.combine(today, datetime.max.time().replace(microsecond=0))
-
-    req = base_request(page=page, page_size=page_size)
-    req["Filters"] = [date_range_filter("ModifiedDate", start, end)]
-    return _call("AssetGetList", req)
-
-
-# ── GET /assets/range  ────────────────────────────────────────────────────────
-
-@router.get("/range", summary="Activos modificados en un intervalo")
+@router.get("/range", summary="Activos modificados en un rango de fechas")
 def assets_by_date_range(
-    start_date: date = Query(..., description="Fecha inicio (YYYY-MM-DD)"),
-    end_date:   date = Query(..., description="Fecha fin   (YYYY-MM-DD)"),
+    start_date: date = Query(..., description="Fecha inicial (YYYY-MM-DD)"),
+    end_date:   date = Query(..., description="Fecha final (YYYY-MM-DD)"),
     page: int = Query(1, ge=1),
     page_size: int = Query(500, ge=1, le=1000),
 ):
     """
-    Filtra activos modificados entre `start_date` y `end_date` (inclusive).
-    Útil para detectar nuevos equipos o cambios de configuración.
+    Filtra los activos cuya ModifiedDate se encuentre en el rango provisto.
+    Util para procesos de sincronizacion incremental.
     """
     start = datetime.combine(start_date, datetime.min.time())
     end   = datetime.combine(end_date,   datetime.max.time().replace(microsecond=0))
 
+    filters = [date_range_filter("ModifiedDate", start, end)]
     req = base_request(page=page, page_size=page_size)
-    req["Filters"] = [date_range_filter("ModifiedDate", start, end)]
+    apply_filters(req, filters)
+    req["SortField"]     = "ModifiedDate"
+    req["SortDirection"] = "Descending"
     return _call("AssetGetList", req)
 
 
-# ── GET /assets/scope-changes  ────────────────────────────────────────────────
+# GET /assets/{asset_id}
+# ------------------------------------------------------------------------------
 
-@router.get("/scope-changes", summary="Activos con cambio de alcance en intervalo")
-def assets_scope_changes(
-    start_date: date = Query(..., description="Fecha inicio"),
-    end_date:   date = Query(..., description="Fecha fin"),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(500, ge=1, le=1000),
-):
+@router.get("/{asset_id}", summary="Detalle de un activo especifico")
+def get_asset_by_id(asset_id: str):
     """
-    Detecta equipos que entraron o salieron del alcance contractual (ScopeChangeDate)
-    en el intervalo indicado.
-    """
-    start = datetime.combine(start_date, datetime.min.time())
-    end   = datetime.combine(end_date,   datetime.max.time().replace(microsecond=0))
-
-    req = base_request(page=page, page_size=page_size)
-    req["Filters"] = [date_range_filter("ScopeChangeDate", start, end)]
-    return _call("AssetGetList", req)
-
-
-# ── GET /assets/in-scope-count  ───────────────────────────────────────────────
-
-@router.get("/in-scope-count", summary="Conteo de activos en alcance por grupo")
-def in_scope_count(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(500, ge=1, le=1000),
-):
-    """
-    Devuelve el conteo de activos vigentes en el contrato, agrupados por código de cargo.
-    """
-    req = base_request(page=page, page_size=page_size)
-    return _call("AssetInScopeCountGetList", req)
-
-
-# ── GET /assets/{asset_id}  ───────────────────────────────────────────────────
-
-@router.get("/{asset_id}", summary="Detalle completo de un activo")
-def get_asset(asset_id: str):
-    """
-    Devuelve todos los campos de un activo específico por su AssetID (GUID).
+    Devuelve la ficha tecnica completa de un activo usando su ID unico (GUID).
     """
     req = base_request()
-    req["ObjectIDs"] = [asset_id]
+    req["ObjectIDs"] = {"string": [asset_id]}
     return _call("AssetGet", req)
 
 
-# ── GET /assets/{asset_id}/locations  ─────────────────────────────────────────
+# GET /assets/serial/{serial_number}
+# ------------------------------------------------------------------------------
+
+@router.get("/serial/{serial_number}", summary="Buscar activo por Numero de Serie")
+def get_asset_by_serial(serial_number: str):
+    """
+    Busca un dispositivo por su numero de serie exacto de fabricante.
+    """
+    filters = [value_filter("SerialNumber", [serial_number])]
+    req = base_request(page=1, page_size=1)
+    apply_filters(req, filters)
+    return _call("AssetGetList", req)
+
+
+# GET /assets/{asset_id}/locations
+# ------------------------------------------------------------------------------
 
 @router.get("/{asset_id}/locations", summary="Historial de ubicaciones del activo")
 def asset_locations(asset_id: str):
     """
-    Devuelve las ubicaciones registradas para el activo indicado.
+    Lista las sedes, departamentos o direcciones fisicas registradas para el activo indicado.
     """
     req = base_request()
-    req["Filters"] = [value_filter("AssetID", [asset_id])]
+    filters = [value_filter("AssetID", [asset_id])]
+    apply_filters(req, filters)
     return _call("AssetLocationGetList", req)
 
 
-# ── GET /assets/{asset_id}/change-history  ────────────────────────────────────
+# GET /assets/{asset_id}/change-history
+# ------------------------------------------------------------------------------
 
 @router.get("/{asset_id}/change-history", summary="Historial de cambios del activo")
 def asset_change_history(
@@ -158,7 +124,7 @@ def asset_change_history(
     page_size: int = Query(500, ge=1, le=1000),
 ):
     """
-    Devuelve el historial de cambios (configuración, estado, contrato) del activo.
+    Devuelve el historial de cambios (configuracion, estado, contrato) del activo.
     Si se indican fechas, filtra por ChangeHistoryDate.
     """
     req = base_request(page=page, page_size=page_size)
@@ -167,14 +133,19 @@ def asset_change_history(
         start = datetime.combine(start_date, datetime.min.time())
         end   = datetime.combine(end_date,   datetime.max.time().replace(microsecond=0))
         filters.append(date_range_filter("ChangeHistoryDate", start, end))
-    req["Filters"] = filters
+    apply_filters(req, filters)
     return _call("AssetChangeHistoryGetList", req)
 
 
-# ── GET /assets/{asset_id}/price-plans  ──────────────────────────────────────
+# GET /assets/{asset_id}/price-plans
+# ------------------------------------------------------------------------------
 
-@router.get("/{asset_id}/price-plans", summary="Planes de precio del activo")
+@router.get("/{asset_id}/price-plans", summary="Planes de precios del activo")
 def asset_price_plans(asset_id: str):
+    """
+    Lista las tarifas y planes de precios asociados al activo de manera historica o vigente.
+    """
     req = base_request()
-    req["Filters"] = [value_filter("AssetID", [asset_id])]
+    filters = [value_filter("AssetID", [asset_id])]
+    apply_filters(req, filters)
     return _call("AssetPricePlanGetList", req)

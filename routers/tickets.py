@@ -1,5 +1,5 @@
 """
-/tickets  – Tickets de servicio vía SOAP MPS API.
+/tickets - Tickets de servicio via SOAP MPS API.
 
 TicketFeed campos:
   AccountID, AgentID, AssetID, ChargebackCodeID, CloseDate, ContactID,
@@ -11,23 +11,23 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Query
-from soap_client import get_soap_client, base_request, date_range_filter, value_filter
-from zeep.helpers import serialize_object
+from soap_client import (
+    base_request, date_range_filter, value_filter,
+    apply_filters, call_soap
+)
 
 router = APIRouter()
 
 
-def _call(operation: str, request: dict):
+def _call(operation: str, req: dict):
     try:
-        client = get_soap_client()
-        method = getattr(client.service, operation)
-        result = method(request=request)
-        return serialize_object(result)
+        return call_soap(operation, req)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
 
-# ── GET /tickets  ─────────────────────────────────────────────────────────────
+# GET /tickets
+# ------------------------------------------------------------------------------
 
 @router.get("/", summary="Listar todos los tickets")
 def list_tickets(
@@ -45,129 +45,48 @@ def list_tickets(
     return _call("TicketGetList", req)
 
 
-# ── GET /tickets/today  ───────────────────────────────────────────────────────
+# GET /tickets/range
+# ------------------------------------------------------------------------------
 
-@router.get("/today", summary="Tickets abiertos hoy")
-def tickets_today(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(500, ge=1, le=1000),
-):
-    """
-    Tickets cuya DateOccurred (fecha de apertura) sea el día de hoy.
-    """
-    today = date.today()
-    start = datetime.combine(today, datetime.min.time())
-    end   = datetime.combine(today, datetime.max.time().replace(microsecond=0))
-
-    req = base_request(page=page, page_size=page_size)
-    req["Filters"]       = [date_range_filter("DateOccurred", start, end)]
-    req["SortField"]     = "DateOccurred"
-    req["SortDirection"] = "Descending"
-    return _call("TicketGetList", req)
-
-
-# ── GET /tickets/range  ───────────────────────────────────────────────────────
-
-@router.get("/range", summary="Tickets en intervalo de fechas (por apertura)")
+@router.get("/range", summary="Tickets creados en un intervalo de fechas")
 def tickets_by_range(
     start_date: date = Query(..., description="Fecha inicio (YYYY-MM-DD)"),
-    end_date:   date = Query(..., description="Fecha fin   (YYYY-MM-DD)"),
+    end_date:   date = Query(..., description="Fecha fin (YYYY-MM-DD)"),
+    status:     Optional[str] = Query(None, description="Filtrar por nombre de estado"),
     page: int = Query(1, ge=1),
     page_size: int = Query(500, ge=1, le=1000),
 ):
     """
-    Tickets abiertos (DateOccurred) entre `start_date` y `end_date`.
+    Devuelve los tickets cuya creacion (DateOccurred) este en el rango.
+    Opcionalmente filtra por Status (Open, Closed, etc.).
     """
     start = datetime.combine(start_date, datetime.min.time())
     end   = datetime.combine(end_date,   datetime.max.time().replace(microsecond=0))
 
+    filters = [date_range_filter("DateOccurred", start, end)]
+    if status:
+        filters.append(value_filter("Status", [status]))
+
     req = base_request(page=page, page_size=page_size)
-    req["Filters"]       = [date_range_filter("DateOccurred", start, end)]
+    apply_filters(req, filters)
     req["SortField"]     = "DateOccurred"
     req["SortDirection"] = "Descending"
     return _call("TicketGetList", req)
 
 
-# ── GET /tickets/closed/range  ────────────────────────────────────────────────
+# GET /tickets/asset/{asset_id}
+# ------------------------------------------------------------------------------
 
-@router.get("/closed/range", summary="Tickets cerrados en intervalo de fechas")
-def tickets_closed_range(
-    start_date: date = Query(..., description="Fecha inicio"),
-    end_date:   date = Query(..., description="Fecha fin"),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(500, ge=1, le=1000),
-):
-    """
-    Tickets cuya CloseDate cae en el intervalo indicado.
-    Útil para reportes de resolución SLA.
-    """
-    start = datetime.combine(start_date, datetime.min.time())
-    end   = datetime.combine(end_date,   datetime.max.time().replace(microsecond=0))
-
-    req = base_request(page=page, page_size=page_size)
-    req["Filters"]       = [date_range_filter("CloseDate", start, end)]
-    req["SortField"]     = "CloseDate"
-    req["SortDirection"] = "Descending"
-    return _call("TicketGetList", req)
-
-
-# ── GET /tickets/modified/range  ──────────────────────────────────────────────
-
-@router.get("/modified/range", summary="Tickets modificados en intervalo de fechas")
-def tickets_modified_range(
-    start_date: date = Query(..., description="Fecha inicio"),
-    end_date:   date = Query(..., description="Fecha fin"),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(500, ge=1, le=1000),
-):
-    """
-    Tickets que fueron actualizados (ModifiedDate) en el intervalo dado.
-    Permite sincronización incremental con sistemas externos.
-    """
-    start = datetime.combine(start_date, datetime.min.time())
-    end   = datetime.combine(end_date,   datetime.max.time().replace(microsecond=0))
-
-    req = base_request(page=page, page_size=page_size)
-    req["Filters"]       = [date_range_filter("ModifiedDate", start, end)]
-    req["SortField"]     = "ModifiedDate"
-    req["SortDirection"] = "Descending"
-    return _call("TicketGetList", req)
-
-
-# ── GET /tickets/activity/range  ──────────────────────────────────────────────
-
-@router.get("/activity/range", summary="Tickets con actividad reciente en intervalo")
-def tickets_activity_range(
-    start_date: date = Query(..., description="Fecha inicio"),
-    end_date:   date = Query(..., description="Fecha fin"),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(500, ge=1, le=1000),
-):
-    """
-    Tickets con LastActivityDate en el rango indicado.
-    """
-    start = datetime.combine(start_date, datetime.min.time())
-    end   = datetime.combine(end_date,   datetime.max.time().replace(microsecond=0))
-
-    req = base_request(page=page, page_size=page_size)
-    req["Filters"]       = [date_range_filter("LastActivityDate", start, end)]
-    req["SortField"]     = "LastActivityDate"
-    req["SortDirection"] = "Descending"
-    return _call("TicketGetList", req)
-
-
-# ── GET /tickets/asset/{asset_id}  ────────────────────────────────────────────
-
-@router.get("/asset/{asset_id}", summary="Tickets de un activo específico")
+@router.get("/asset/{asset_id}", summary="Historial de tickets de un activo")
 def tickets_by_asset(
-    asset_id: str,
+    asset_id:   str,
     start_date: Optional[date] = Query(None),
     end_date:   Optional[date] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(500, ge=1, le=1000),
 ):
     """
-    Tickets asociados a un activo (AssetID). Acepta filtro de fecha opcional.
+    Historico completo de incidentes reportados para una impresora/MFD especifica.
     """
     req = base_request(page=page, page_size=page_size)
     filters = [value_filter("AssetID", [asset_id])]
@@ -175,13 +94,14 @@ def tickets_by_asset(
         start = datetime.combine(start_date, datetime.min.time())
         end   = datetime.combine(end_date,   datetime.max.time().replace(microsecond=0))
         filters.append(date_range_filter("DateOccurred", start, end))
-    req["Filters"]       = filters
+    apply_filters(req, filters)
     req["SortField"]     = "DateOccurred"
     req["SortDirection"] = "Descending"
     return _call("TicketGetList", req)
 
 
-# ── GET /tickets/{ticket_id}  ─────────────────────────────────────────────────
+# GET /tickets/{ticket_id}
+# ------------------------------------------------------------------------------
 
 @router.get("/{ticket_id}", summary="Detalle completo de un ticket")
 def get_ticket(ticket_id: str):
@@ -189,11 +109,12 @@ def get_ticket(ticket_id: str):
     Devuelve todos los campos del ticket identificado por su TicketID (GUID).
     """
     req = base_request()
-    req["ObjectIDs"] = [ticket_id]
+    req["ObjectIDs"] = {"string": [ticket_id]}
     return _call("TicketGet", req)
 
 
-# ── GET /tickets/{ticket_id}/activities  ──────────────────────────────────────
+# GET /tickets/{ticket_id}/activities
+# ------------------------------------------------------------------------------
 
 @router.get("/{ticket_id}/activities", summary="Actividades del ticket")
 def ticket_activities(ticket_id: str):
@@ -201,17 +122,20 @@ def ticket_activities(ticket_id: str):
     Historial de actividades/actualizaciones registradas en el ticket.
     """
     req = base_request()
-    req["Filters"] = [value_filter("TicketID", [ticket_id])]
+    filters = [value_filter("TicketID", [ticket_id])]
+    apply_filters(req, filters)
     return _call("TicketActivityGet", req)
 
 
-# ── GET /tickets/{ticket_id}/assignments  ─────────────────────────────────────
+# GET /tickets/{ticket_id}/assignments
+# ------------------------------------------------------------------------------
 
 @router.get("/{ticket_id}/assignments", summary="Asignaciones del ticket")
 def ticket_assignments(ticket_id: str):
     """
-    Técnicos y equipos asignados al ticket.
+    Tecnicos y equipos asignados al ticket.
     """
     req = base_request()
-    req["Filters"] = [value_filter("TicketID", [ticket_id])]
-    return _call("TicketAssignmentsGet", req)
+    filters = [value_filter("TicketID", [ticket_id])]
+    apply_filters(req, filters)
+    return _call("TicketAssignmentGetList", req)
